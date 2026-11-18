@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.venv/
+build/
+dist/
+data/
+*.aax
+*.aaxc
+*.voucher
+*.mp3
+auth.json
+config.toml
+library.json
