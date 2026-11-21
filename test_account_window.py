@@ -1,5 +1,7 @@
 """Offline coverage of the browser navigation boundary."""
+from pathlib import Path
 import queue
+from tempfile import TemporaryDirectory
 import threading
 from types import SimpleNamespace
 import unittest
@@ -7,6 +9,8 @@ from unittest.mock import MagicMock, Mock, patch
 
 from account_window import open_account_window
 from browser_login import validate_callback
+from core import InvalidIdentifier, PortablePaths
+from web_player import open_player_window
 
 
 class AccountWindowTests(unittest.TestCase):
@@ -60,3 +64,25 @@ class AccountWindowTests(unittest.TestCase):
         with patch("account_window.installed_browser", return_value=None):
             open_account_window("https://www.amazon.de/ap/signin", Mock(), threading.Event(), events)
         self.assertEqual(events.get_nowait(), "manual")
+
+
+    def test_test_player_reuses_only_its_own_browser_profile(self):
+        with TemporaryDirectory() as temporary, \
+             patch("web_player.installed_browser", return_value="/fixture/chromium"), \
+             patch("web_player.subprocess.Popen") as launch:
+            paths = PortablePaths(Path(temporary))
+            open_player_window(paths, "standard")
+            open_player_window(paths, "standard", asin="B012345678")
+            open_player_window(paths, "other", asin="B012345678")
+            first, play, other = [call.args[0] for call in launch.call_args_list]
+            self.assertEqual(first[1], play[1])
+            self.assertNotEqual(play[1], other[1])
+            self.assertEqual(play[1], f"--user-data-dir={paths.account('standard') / 'web-player'}")
+            self.assertEqual(first[-1], "--app=https://www.amazon.de/code")
+            self.assertEqual(play[-1], "--app=https://www.audible.de/webplayer?asin=B012345678&isSample=false")
+            self.assertTrue(all(call.kwargs["shell"] is False for call in launch.call_args_list))
+            self.assertFalse((paths.account("standard") / "auth.json").exists())
+            launch.reset_mock()
+            with self.assertRaises(InvalidIdentifier):
+                open_player_window(paths, "standard", asin="B012345678&url=elsewhere")
+            launch.assert_not_called()

@@ -23,6 +23,7 @@ from cover_preview import CoverLoader, is_cover_url
 from library_view import ORDERINGS, can_download, download_status, ordered_items
 from media_tools import EXTENSIONS, audio_path, import_one, join, load_local, local_source, split
 from player_window import PlayerWindow
+from player_dock import PlayerDock
 from account_window import open_account_window
 from device_login import ACTIVATION_URL
 import theme
@@ -31,6 +32,7 @@ from jobs import JobController, JobCancelled, require_plain_account, stop_proces
 from login import readiness
 from transfer_progress import DownloadProgress, Progress
 from browser_login import BrowserLoginController, browser_environment
+from web_player import audible_player_url, open_player_window
 
 _ASIN = re.compile(r"[A-Z0-9]{10}\Z")
 _HEX = re.compile(r"[0-9a-fA-F]{32}\Z")
@@ -223,7 +225,8 @@ class App:
         self.cover_url = self.cover_image = None
         self.busy = self.cancelling = False
         self.player = None
-        root.title("Hörwerk 0.2.21")
+        self.player_dock = None
+        root.title("Hörwerk 0.2.23")
         root.geometry("1000x680")
         root.minsize(720, 500)
         theme.apply(root)
@@ -243,6 +246,8 @@ class App:
         commands = tk.Menu(self.file_tools, tearoff=False)
         commands.add_command(label="Audiodateien importieren …", command=self.import_local)
         commands.add_command(label="Audiodatei abspielen …", command=self.play_file)
+        commands.add_command(label="Audible in der Seitenleiste testen …", command=self.try_docked_player)
+        commands.add_command(label="Audible im Playerfenster testen …", command=self.try_web_player)
         commands.add_command(label="Metadaten bearbeiten …", command=self.edit_metadata)
         commands.add_command(label="Bibliothek als HTML sichern …", command=lambda: self.save_catalog("html"))
         commands.add_command(label="Bibliothek als CSV sichern …", command=lambda: self.save_catalog("csv"))
@@ -288,7 +293,7 @@ class App:
 
         library_area = ttk.Frame(body)
         library_area.grid(row=4, column=0, sticky="nsew")
-        preview = ttk.Frame(library_area, style="Panel.TFrame", padding=10, width=188)
+        preview = self.preview = ttk.Frame(library_area, style="Panel.TFrame", padding=10, width=188)
         preview.pack(side="right", fill="y", padx=(8, 0))
         preview.pack_propagate(False)
         self.cover_label = ttk.Label(preview, text="Titelbild", style="PanelMuted.TLabel", anchor="center")
@@ -578,16 +583,70 @@ class App:
             else:
                 files = local_audio_files(self.paths, self.profile.get(), item["asin"])
                 if not files or files[0].suffix.lower() == ".aaxc":
-                    asin = item["asin"]
-                    if not _ASIN.fullmatch(asin):
-                        raise HoerwerkError("Der Audible-Titel hat keine gültige Kennung.")
-                    open_standard_browser(f"https://www.audible.de/webplayer?asin={asin}&isSample=false")
+                    open_standard_browser(audible_player_url(item["asin"]))
                     self.status.set("Audible-Webplayer im Standardbrowser angefordert.")
                     return
                 source = files[0]
             self.open_player(source, "title:" + item["asin"], item["title"])
         except (HoerwerkError, OSError) as exc:
             messagebox.showinfo("Wiedergabe", str(exc), parent=self.root)
+
+    def try_web_player(self):
+        try:
+            items = self.selected_many()
+            if len(items) != 1 or items[0].get("kind") == "local":
+                raise HoerwerkError("Wähle genau einen Audible-Titel aus.")
+            open_player_window(self.paths, self.profile.get(), asin=items[0]["asin"])
+            self.status.set("Audible im Testfenster angefordert. Melde dich dort bei Bedarf an.")
+        except (HoerwerkError, OSError) as exc:
+            messagebox.showinfo("Audible-Player", str(exc), parent=self.root)
+
+    def try_docked_player(self):
+        dock = None
+        try:
+            if self.player_dock is not None:
+                raise HoerwerkError("Löse zuerst den aktuellen Player über „Fenster lösen“.")
+            items = self.selected_many()
+            if len(items) != 1 or items[0].get("kind") == "local":
+                raise HoerwerkError("Wähle genau einen Audible-Titel aus.")
+            container = tk.Frame(self.preview, background=theme.FIELD)
+            try:
+                dock = PlayerDock(self.root, container, self.dock_status)
+            except HoerwerkError:
+                container.destroy()
+                raise
+            self.player_dock = dock
+            self.cover_label.pack_forget()
+            self.cover_title.pack_forget()
+            self.preview.configure(width=440)
+            self.detach_player_button = ttk.Button(self.preview, text="Fenster lösen",
+                                                   command=self.close_dock)
+            self.detach_player_button.pack(anchor="e", pady=(0, 6))
+            container.pack(fill="both", expand=True)
+            container.bind("<Configure>", dock.resize)
+            profile_dir = open_player_window(self.paths, self.profile.get(), asin=items[0]["asin"], x11=True)
+            dock.start(profile_dir)
+            self.status.set("Audible-Player wird für die Seitenleiste geöffnet …")
+        except (HoerwerkError, OSError) as exc:
+            if dock is not None:
+                self.close_dock()
+            messagebox.showinfo("Audible-Player", str(exc), parent=self.root)
+
+    def dock_status(self, message, *, failed=False):
+        if failed and self.player_dock is not None:
+            self.close_dock()
+        self.status.set(message)
+
+    def close_dock(self):
+        if self.player_dock is None:
+            return
+        dock, self.player_dock = self.player_dock, None
+        dock.close()
+        dock.container.destroy()
+        self.detach_player_button.destroy()
+        self.preview.configure(width=188)
+        self.cover_label.pack(fill="x", pady=(18, 0))
+        self.cover_title.pack(fill="x", pady=(8, 0))
 
     def import_local(self):
         if self.busy:
@@ -813,6 +872,7 @@ class App:
             self.status.set("Anmeldung bitte auch im separaten Terminal beenden; das Fenster wartet darauf.")
 
     def close(self):
+        self.close_dock()
         if self.player is not None:
             self.player.close()
         self.cover_loader.closed.set()
@@ -909,6 +969,8 @@ class BrowserLoginDialog:
         self.info = tk.StringVar(value="Der Amazon-Code wird angefordert …")
         ttk.Label(content, textvariable=self.info, wraplength=550, justify="left").pack(anchor="w", pady=(8, 14))
         self.code_panel = ttk.Frame(content, style="Panel.TFrame", padding=12)
+        self.player_login = ttk.Button(content, text="Amazon im Playerfenster öffnen (Test)",
+                                       command=self.copy_and_open_player)
         self.device_value = tk.StringVar()
         ttk.Label(self.code_panel, textvariable=self.device_value,
                   style="Panel.TLabel", font=("TkDefaultFont", 20, "bold")).pack(side="left", padx=(0, 16))
@@ -948,6 +1010,7 @@ class BrowserLoginDialog:
             "3. Klicke in der Taskleiste wieder auf Hörwerk. Nach der Bestätigung erscheint die Bibliothek."
         )
         self.code_panel.pack(fill="x", before=self.actions)
+        self.player_login.pack(anchor="w", pady=(8, 0), before=self.actions)
         self.manual_button.configure(text="Code kopieren und Amazon öffnen",
                                      command=self.copy_and_open_amazon, state="normal")
         self.manual_button.focus_set()
@@ -962,6 +1025,15 @@ class BrowserLoginDialog:
             pass
         if self.open_manual():
             self.manual_button.configure(text="Code kopieren und Amazon erneut öffnen")
+
+    def copy_and_open_player(self):
+        if self.stop.is_set():
+            return
+        try:
+            self.copy_code()
+            open_player_window(self.app.paths, self.profile)
+        except (HoerwerkError, OSError, tk.TclError) as exc:
+            messagebox.showinfo("Audible-Player", str(exc), parent=self.app.root)
 
     def open_manual(self):
         if not self.url:
@@ -1012,6 +1084,7 @@ class BrowserLoginDialog:
         self.controller.cancel()
         self.manual_button.configure(state="disabled")
         self.cancel_button.configure(state="disabled")
+        self.player_login.configure(state="disabled")
         self.info.set("Anmeldung wird abgebrochen …")
 
     def poll(self):

@@ -28,7 +28,7 @@ def copy_notices(package, output):
     dist = distribution(package)
     copied = []
     for item in dist.files or ():
-        if "licenses" in item.parts and dist.locate_file(item).is_file():
+        if ("licenses" in item.parts or item.name in {"LICENSE", "COPYING"}) and dist.locate_file(item).is_file():
             path = output / f"{package}-{item.name}"
             shutil.copy2(dist.locate_file(item), path)
             copied.append(path.name)
@@ -79,10 +79,11 @@ def main(*, required_target=None):
     licenses = installed / "licenses"
     for package in ("audible-cli", "imageio-ffmpeg", "playwright", "greenlet", "Pillow", "miniaudio", "cffi", "pycparser"):
         copy_notices(package, licenses)
+    if target == "linux":
+        copy_notices("python-xlib", licenses)
     shutil.copy2(source / "COPYING-FFmpeg.txt", licenses / "FFmpeg-GPL-3.0.txt")
     original = installed / "source"
     original.mkdir()
-    shutil.copy2(source / "LICENSE", licenses / "Hoerwerk-AGPL-3.0.txt")
     for path in sorted(source.iterdir()):
         if path.is_file() and path.suffix in {".py", ".md", ".txt"}:
             shutil.copy2(path, original / path.name)

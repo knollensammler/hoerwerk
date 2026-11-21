@@ -164,9 +164,10 @@ def build(repo_dir,output_dir,staging,*,pyinstaller=None,runner=subprocess.run,t
         temp=Path(tmp); dist,work,spec=temp/"dist",temp/"work",temp/"spec"
         version=_run(runner,[pyinstaller,"--version"],cwd=repo_dir,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True).stdout.strip()
         if not version or version.lower()=="unknown": raise BuildError("PyInstaller-Version ist nicht nachvollziehbar.")
+        platform_args = ["--collect-submodules", "Xlib"] if target_os == "linux" else []
         _run(runner,[pyinstaller,"--onedir","--console","--name","Hoerwerk",
                      "--hidden-import","_cffi_backend","--copy-metadata","miniaudio",
-                     *runtime_ssl_data_args(),"--distpath",str(dist),"--workpath",str(work),"--specpath",str(spec),str(repo_dir/"entry.py")],cwd=repo_dir)
+                     *platform_args,*runtime_ssl_data_args(),"--distpath",str(dist),"--workpath",str(work),"--specpath",str(spec),str(repo_dir/"entry.py")],cwd=repo_dir)
         built=dist/"Hoerwerk"; exe=built/("Hoerwerk.exe" if target_os=="windows" else "Hoerwerk")
         if not built.is_dir() or not exe.is_file(): raise BuildError("PyInstaller hat kein erwartetes App-Executable erzeugt.")
         if target_os!="windows" and not os.access(exe,os.X_OK): raise BuildError("Das App-Executable besitzt keine Ausführungsrechte.")
